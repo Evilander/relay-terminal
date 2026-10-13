@@ -28,6 +28,10 @@ jobs:
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: '3.11'
+      - run: python -m pip install -r requirements-test.txt
+      - name: Check SSH fixture startup
+        timeout-minutes: 1
+        run: python scripts/ssh-fixture.py (Join-Path (Get-Location).Path '.artifacts/ci-startup-fixture') --seconds 1
       - uses: dtolnay/rust-toolchain@686976e191b89faba57d3206551f0f330d8cb249
         with:
           toolchain: '1.99.0'
@@ -39,7 +43,6 @@ jobs:
       - run: npm run test:rust -- --locked
       - run: cargo clippy --manifest-path src-tauri/Cargo.toml --locked --all-targets -- -D warnings
       - run: node scripts/generate-notices.mjs --check
-      - run: python -m pip install -r requirements-test.txt
       - run: npm run tauri -- build --debug --no-bundle
       - name: Native desktop and SFTP checks
         shell: pwsh
@@ -62,11 +65,27 @@ jobs:
             if ($LASTEXITCODE -ne 0) { throw 'SFTP checks failed' }
             node scripts/native-smoke.mjs src-tauri/target/debug/relay-terminal.exe $fixture .artifacts/ci-native
             if ($LASTEXITCODE -ne 0) { throw 'Native desktop checks failed' }
+          } catch {
+            $server.Refresh()
+            if ($server.HasExited) { Write-Output "SSH fixture exit code: $($server.ExitCode)" }
+            Get-Content -LiteralPath (Join-Path $testRoot 'fixture-errors.log') -ErrorAction SilentlyContinue
+            Get-Content -LiteralPath (Join-Path $testRoot 'fixture.log') -ErrorAction SilentlyContinue
+            throw
           } finally {
             $server.Refresh()
             if (-not $server.HasExited) { Stop-Process -Id $server.Id }
           }
       - run: npm run package -- --ci
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: failure()
+        with:
+          name: integration-failure-logs
+          if-no-files-found: ignore
+          path: |
+            .artifacts/fixture.log
+            .artifacts/fixture-errors.log
+            .artifacts/ci-native/app.log
+            .artifacts/ci-native/proof.json
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: relay-windows
