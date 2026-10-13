@@ -1,0 +1,78 @@
+name: Windows
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: windows-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  check:
+    runs-on: windows-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: '24'
+          cache: npm
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: '3.11'
+      - uses: dtolnay/rust-toolchain@686976e191b89faba57d3206551f0f330d8cb249
+        with:
+          toolchain: '1.99.0'
+          components: rustfmt, clippy
+      - run: npm ci
+      - run: cargo fmt --manifest-path src-tauri/Cargo.toml -- --check
+      - run: npm test
+      - run: node scripts/connection-ui-smoke.mjs .artifacts/ci-connection-ui
+      - run: npm run test:rust -- --locked
+      - run: cargo clippy --manifest-path src-tauri/Cargo.toml --locked --all-targets -- -D warnings
+      - run: node scripts/generate-notices.mjs --check
+      - run: python -m pip install -r requirements-test.txt
+      - run: npm run tauri -- build --debug --no-bundle
+      - name: Native desktop and SFTP checks
+        shell: pwsh
+        timeout-minutes: 5
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $testRoot = Join-Path (Get-Location).Path '.artifacts'
+          New-Item -ItemType Directory -Path $testRoot -Force | Out-Null
+          $fixtureDirectory = Join-Path $testRoot 'ci-fixture'
+          $server = Start-Process -FilePath (Get-Command python).Source -ArgumentList @('scripts/ssh-fixture.py', $fixtureDirectory, '--seconds', '600') -WindowStyle Hidden -PassThru -RedirectStandardOutput (Join-Path $testRoot 'fixture.log') -RedirectStandardError (Join-Path $testRoot 'fixture-errors.log')
+          try {
+            $fixture = Join-Path $fixtureDirectory 'fixture.json'
+            for ($attempt = 0; $attempt -lt 40 -and -not (Test-Path -LiteralPath $fixture); $attempt++) {
+              Start-Sleep -Milliseconds 250
+              $server.Refresh()
+              if ($server.HasExited) { throw 'SSH fixture exited during startup' }
+            }
+            if (-not (Test-Path -LiteralPath $fixture)) { throw 'SSH fixture did not become ready' }
+            cargo run --manifest-path src-tauri/Cargo.toml --locked --example sftp_smoke -- $fixture
+            if ($LASTEXITCODE -ne 0) { throw 'SFTP checks failed' }
+            node scripts/native-smoke.mjs src-tauri/target/debug/relay-terminal.exe $fixture .artifacts/ci-native
+            if ($LASTEXITCODE -ne 0) { throw 'Native desktop checks failed' }
+          } finally {
+            $server.Refresh()
+            if (-not $server.HasExited) { Stop-Process -Id $server.Id }
+          }
+      - run: npm run package -- --ci
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: relay-windows
+          if-no-files-found: error
+          path: |
+            src-tauri/target/release/relay-terminal.exe
+            src-tauri/target/release/bundle/nsis/*-setup.exe
+            LICENSE
+            THIRD_PARTY_NOTICES.txt

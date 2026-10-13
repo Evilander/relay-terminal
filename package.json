@@ -1,0 +1,32 @@
+{
+  "name": "relay-terminal",
+  "private": true,
+  "version": "0.2.0",
+  "license": "MIT",
+  "repository": {"type":"git","url":"https://github.com/Evilander/relay-terminal.git"},
+  "type": "module",
+  "scripts": {
+    "dev": "vite --host 127.0.0.1 --port 1420 --strictPort",
+    "build": "tsc --noEmit && vite build",
+    "tauri": "node scripts/tauri.mjs",
+    "desktop": "node scripts/tauri.mjs dev",
+    "package": "node scripts/tauri.mjs build",
+    "test": "vitest run",
+    "test:rust": "node scripts/test-rust.mjs"
+  },
+  "dependencies": {
+    "@tauri-apps/api": "2.12.3",
+    "@tauri-apps/plugin-dialog": "^2.4.0",
+    "@xterm/addon-fit": "0.11.0",
+    "@xterm/addon-search": "0.16.0",
+    "@xterm/xterm": "6.0.0"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.58.0",
+    "@tauri-apps/cli": "2.12.2",
+    "@types/node": "^24.0.0",
+    "typescript": "7.0.2",
+    "vite": "8.3.4",
+    "vitest": "^4.0.0"
+  }
+}
