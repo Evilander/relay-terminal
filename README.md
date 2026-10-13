@@ -98,7 +98,7 @@ npm run package
 
 The frontend is in `src/`; native commands, SSH/SFTP handling and terminal process management are in `src-tauri/src/`. The IPC contract is defined in `src/api.ts`.
 
-Dependency versions are locked in `package-lock.json` and `src-tauri/Cargo.lock`. Regenerate the bundled license notices with `node scripts/generate-notices.mjs` after changing dependencies. Relay's own code is [MIT licensed](LICENSE); dependencies retain the terms in [THIRD_PARTY_NOTICES.txt](THIRD_PARTY_NOTICES.txt).
+Dependency versions are locked in `package-lock.json` and `src-tauri/Cargo.lock`. Regenerate the bundled license notices with `node scripts/generate-notices.mjs` after changing dependencies; generation needs upstream access. Review and keep the notices with `THIRD_PARTY_NOTICES.sha256`. The `--check` mode verifies the reviewed notices and lockfile hashes offline. Relay's own code is [MIT licensed](LICENSE); dependencies retain the terms in [THIRD_PARTY_NOTICES.txt](THIRD_PARTY_NOTICES.txt).
 
 For native integration checks, install `requirements-test.txt` and start `scripts/ssh-fixture.py` with an absolute, unused output directory and `--seconds 1200`. It creates temporary keys and a localhost SSH/SFTP server; it does not edit your SSH configuration. Use its printed `fixture.json` path with:
 

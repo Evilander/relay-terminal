@@ -7,8 +7,8 @@ import { fileURLToPath } from 'node:url';
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const platform = 'x86_64-pc-windows-msvc';
 const output = path.join(root, 'THIRD_PARTY_NOTICES.txt');
+const checksumOutput = path.join(root, 'THIRD_PARTY_NOTICES.sha256');
 const licenseName = /^(licen[sc]es?|copying|copyright|notices?)([._-]|$)/i;
-const bundledFrontend = ['@tauri-apps/api', '@tauri-apps/plugin-dialog', '@xterm/xterm', '@xterm/addon-fit', '@xterm/addon-search'];
 const markers = {
   MIT: /permission is hereby granted, free of charge/, 'MIT-0': /permission is hereby granted, free of charge/,
   'Apache-2.0': /apache license.*version 2\.0.*terms and conditions/,
@@ -25,6 +25,53 @@ const remoteTrees = new Map();
 const remoteText = new Map();
 const sha256 = text => createHash('sha256').update(text).digest('hex');
 const normalized = text => text.replace(/\r\n?/g, '\n').trimEnd();
+const lf = text => text.replace(/\r\n?/g, '\n');
+
+export async function checkNotices(directory = root) {
+  const notices = lf(await readFile(path.join(directory, 'THIRD_PARTY_NOTICES.txt'), 'utf8'));
+  const checksum = (await readFile(path.join(directory, 'THIRD_PARTY_NOTICES.sha256'), 'utf8')).trim();
+  if (checksum !== `${sha256(notices)}  THIRD_PARTY_NOTICES.txt`) throw new Error('Third-party notice integrity check failed. Regenerate and review the notices before packaging.');
+  const cargoLock = lf(await readFile(path.join(directory, 'src-tauri/Cargo.lock'), 'utf8'));
+  const npmLock = lf(await readFile(path.join(directory, 'package-lock.json'), 'utf8'));
+  for (const [name, contents] of [['Cargo.lock', cargoLock], ['package-lock.json', npmLock]]) {
+    if (!notices.includes(`${name} SHA-256 (LF line endings): ${sha256(contents)}\n`)) throw new Error(`${name} changed. Regenerate and review third-party notices before packaging.`);
+  }
+  if (!notices.startsWith(`Relay third-party notices\nTarget: ${platform}\n`)) throw new Error('Unexpected notices target or format.');
+  const cargoPackages = new Set(cargoLock.split('[[package]]').slice(1).map(block => {
+    const name = block.match(/^name = "([^"]+)"$/m)?.[1];
+    const version = block.match(/^version = "([^"]+)"$/m)?.[1];
+    if (!name || !version) throw new Error('Cannot read a Cargo.lock package.');
+    return `${name}@${version}`;
+  }));
+  const npm = JSON.parse(npmLock);
+  const index = new Map();
+  const counts = { Cargo: 0, npm: 0 };
+  for (const section of notices.split(`\n${'='.repeat(78)}\n`).slice(1)) {
+    const header = section.match(/^Package: (\S+) (\S+)\nEcosystem: (Cargo|npm)\nSource: (\S+)\nDeclared license: ([^\n]+)\n/);
+    if (!header) throw new Error('Malformed third-party package index.');
+    const [, name, version, ecosystem, source, license] = header;
+    const key = `${ecosystem}:${name}@${version}`;
+    if (index.has(key)) throw new Error(`Duplicate third-party package: ${key}`);
+    if (!licenseCovered(license, [{ text: section }])) throw new Error(`License text missing for ${key}.`);
+    index.set(key, true); counts[ecosystem]++;
+    if (ecosystem === 'Cargo') {
+      if (!cargoPackages.has(`${name}@${version}`) || source !== `https://crates.io/crates/${name}/${version}`) throw new Error(`Cargo notice does not match the lockfile: ${key}`);
+    } else {
+      const locked = npm.packages?.[`node_modules/${name}`];
+      if (locked?.version !== version || locked.resolved !== source) throw new Error(`Frontend notice does not match the lockfile: ${key}`);
+    }
+  }
+  const pending = Object.keys(npm.packages?.['']?.dependencies || {}); const seen = new Set();
+  for (const name of pending) {
+    if (seen.has(name)) continue;
+    seen.add(name);
+    const locked = npm.packages?.[`node_modules/${name}`];
+    if (!locked || !index.has(`npm:${name}@${locked.version}`)) throw new Error(`Bundled frontend package has no notice: ${name}`);
+    pending.push(...Object.keys(locked.dependencies || {}));
+  }
+  if (seen.size !== counts.npm || !notices.includes(`Packages: ${counts.Cargo} Cargo; ${counts.npm} npm\n`)) throw new Error('Third-party notice package coverage or counts do not match.');
+  return { cargo: counts.Cargo, npm: counts.npm, bytes: Buffer.byteLength(notices) };
+}
 
 function licenseCovered(expression, documents) {
   if (typeof expression !== 'string' || !expression.trim()) throw new Error('Missing declared license; review required.');
@@ -117,6 +164,11 @@ async function upstreamDocuments(crate) {
 
 async function main() {
   if (process.argv.slice(2).some(argument => argument !== '--check')) throw new Error('Usage: node scripts/generate-notices.mjs [--check]');
+  if (process.argv.includes('--check')) {
+    const checked = await checkNotices();
+    console.log(`Third-party notices verified offline: ${checked.cargo} Cargo packages, ${checked.npm} npm packages; ${checked.bytes} bytes.`);
+    return;
+  }
   const metadata = JSON.parse(execFileSync('cargo', ['metadata', '--locked', '--format-version', '1', '--filter-platform', platform, '--manifest-path', 'src-tauri/Cargo.toml'], { cwd: root, encoding: 'utf8', maxBuffer: 32 * 1024 * 1024, timeout: 60_000 }));
   const resolved = new Set(metadata.resolve.nodes.map(node => node.id));
   const crates = metadata.packages.filter(crate => resolved.has(crate.id) && crate.source).sort((a, b) => `${a.name}@${a.version}`.localeCompare(`${b.name}@${b.version}`, 'en'));
@@ -128,7 +180,7 @@ async function main() {
     if (!licenseCovered(crate.license, documents)) throw new Error(`Full license text missing for Cargo ${crate.name} ${crate.version}: ${crate.license}`);
     packages.push({ name: crate.name, version: crate.version, ecosystem: 'Cargo', source: `https://crates.io/crates/${crate.name}/${crate.version}`, license: crate.license, documents });
   }
-  const pending = [...bundledFrontend]; const seen = new Set();
+  const pending = Object.keys(lock.packages?.['']?.dependencies || {}); const seen = new Set();
   for (const name of pending) {
     if (seen.has(name)) continue;
     seen.add(name);
@@ -163,10 +215,11 @@ async function main() {
     for (const document of pkg.documents.sort((a, b) => a.name.localeCompare(b.name, 'en'))) sections.push(`\n--- ${document.name} ---${document.source ? `\nRetrieved from: ${document.source}` : ''}\nSHA-256: ${sha256(document.text)}\n\n${document.text}`);
   }
   const notices = `${sections.join('\n')}\n`;
-  if (process.argv.includes('--check')) {
-    if (await readFile(output, 'utf8') !== notices) throw new Error('THIRD_PARTY_NOTICES.txt is stale. Regenerate before packaging.');
-  } else await writeFile(output, notices, 'utf8');
-  console.log(`Third-party notices ${process.argv.includes('--check') ? 'verified' : 'generated'}: ${crates.length} Cargo packages, ${seen.size} npm packages; ${Buffer.byteLength(notices)} bytes.`);
+  await writeFile(output, notices, 'utf8');
+  await writeFile(checksumOutput, `${sha256(notices)}  THIRD_PARTY_NOTICES.txt\n`, 'utf8');
+  console.log(`Third-party notices generated: ${crates.length} Cargo packages, ${seen.size} npm packages; ${Buffer.byteLength(notices)} bytes.`);
 }
 
-main().catch(error => { console.error(error.message); process.exitCode = 1; });
+if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+  main().catch(error => { console.error(error.message); process.exitCode = 1; });
+}
