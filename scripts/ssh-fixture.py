@@ -235,7 +235,7 @@ def main():
             "$acl = New-Object System.Security.AccessControl.FileSecurity; "
             "$acl.SetOwner($sid); $acl.SetAccessRuleProtection($true, $false); "
             "$acl.AddAccessRule((New-Object System.Security.AccessControl.FileSystemAccessRule($sid, 'FullControl', 'Allow'))); "
-            "Set-Acl -LiteralPath $env:RELAY_FIXTURE_KEY -AclObject $acl",
+            "[System.IO.File]::SetAccessControl($env:RELAY_FIXTURE_KEY, $acl)",
         ], env=environment, check=True, timeout=15)
     host_key = paramiko.RSAKey.generate(2048)
     listener = socket.socket()
