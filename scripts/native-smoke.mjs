@@ -78,7 +78,9 @@ async function command(value, expected) {
   await page.locator('.terminal-host.active .xterm-helper-textarea').focus();
   await page.keyboard.type(value);
   await page.keyboard.press('Enter');
-  await expect.poll(screen, { timeout: 20000 }).toContain(expected);
+  const output = expect.poll(screen, { timeout: 20000 });
+  if (expected instanceof RegExp) await output.toMatch(expected);
+  else await output.toContain(expected);
 }
 
 try {
@@ -111,8 +113,8 @@ try {
   await expect(page.locator('#tabs .tab')).toHaveCount(1);
   proof.checks.push('Second launch focuses the existing instance without creating another settings writer');
   await command("Write-Output ('RELAY_' + (6*7) + ' café λ 日本語')", 'RELAY_42 café λ 日本語');
-  await command("Write-Output ('RELAY_PID_' + $PID)", 'RELAY_PID_');
-  const initialPid = Number((await screen()).match(/RELAY_PID_(\d+)/)?.[1]);
+  await command("Write-Output ('RELAY_PID_' + $PID + '_END')", /RELAY_PID_\d+_END/);
+  const initialPid = Number((await screen()).match(/RELAY_PID_(\d+)_END/)?.[1]);
   assert(Number.isInteger(initialPid) && initialPid > 0, 'Could not read local shell PID');
   proof.checks.push('Native ConPTY command execution and Unicode input/output');
 
@@ -124,11 +126,20 @@ try {
   assert(!(await screen()).includes('SECOND_42'));
   proof.checks.push('Independent tab buffers and live session switching');
 
+  const originalGrid = (await page.locator('#status-right').innerText()).match(/^\d+ × \d+/)?.[0];
+  assert(originalGrid, 'Could not read the original terminal grid');
   await page.setViewportSize({ width: 1080, height: 720 });
-  await expect.poll(async () => page.locator('#status-right').innerText()).toMatch(/^\d+ × \d+/);
-  await delay(200);
+  await expect.poll(async () => {
+    const grid = (await page.locator('#status-right').innerText()).match(/^\d+ × \d+/)?.[0];
+    return Boolean(grid && grid !== originalGrid);
+  }, { timeout: 20000 }).toBe(true);
   const cols = Number((await page.locator('#status-right').innerText()).split(' ')[0]);
-  await command("Write-Output ('RELAY_COLS_' + $Host.UI.RawUI.WindowSize.Width)", `RELAY_COLS_${cols}`);
+  let resizeQuery = 0;
+  await expect.poll(async () => {
+    const marker = `RELAY_COLS_${++resizeQuery}_`;
+    await command(`Write-Output ('${marker}' + $Host.UI.RawUI.WindowSize.Width + '_END')`, new RegExp(`${marker}\\d+_END`));
+    return Number((await screen()).match(new RegExp(`${marker}(\\d+)_END`))?.[1]);
+  }, { timeout: 20000 }).toBe(cols);
   proof.checks.push('Viewport resizing reaches the native PTY');
 
   await page.locator('.profile-connect').filter({ hasText: fixture.profile.name }).click();
@@ -156,8 +167,8 @@ try {
   proof.checks.push('Closing a tab terminates its real shell process');
 
   await page.locator('#tabs .tab-select').first().click();
-  await command("Write-Output ('RELOAD_PID_' + $PID)", 'RELOAD_PID_');
-  const reloadPid = Number((await screen()).match(/RELOAD_PID_(\d+)/)?.[1]);
+  await command("Write-Output ('RELOAD_PID_' + $PID + '_END')", /RELOAD_PID_\d+_END/);
+  const reloadPid = Number((await screen()).match(/RELOAD_PID_(\d+)_END/)?.[1]);
   assert(reloadPid > 0);
   await page.reload();
   await expect(page.locator('#tabs .tab')).toHaveCount(1, { timeout: 20000 });
